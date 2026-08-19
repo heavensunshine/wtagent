@@ -24,7 +24,7 @@ cd wtagent-demo
 wtagent
 ```
 
-Choose `Pro` or `Current`, then type a task:
+Choose `Instant`, `Medium`, `High`, or `Current`, then type a task. `Current` keeps the mode already selected in ChatGPT Web.
 
 ```text
 $ wtagent
@@ -35,7 +35,7 @@ WTAgent creates the files in the current directory, runs the script locally, and
 
 If ChatGPT is not signed in, WTAgent opens its dedicated Chrome profile and asks you to sign in. Your task continues automatically after login.
 
-No OpenAI API key or ChatGPT Pro subscription is required. WTAgent uses your own ChatGPT Web account, available models, and quota.
+No OpenAI API key or ChatGPT Pro subscription is required. WTAgent uses your own ChatGPT Web account, available models, and quota. The interactive picker exposes the reasoning levels available to ChatGPT Plus users; existing Pro users can still request `--mode Pro` explicitly when that option is available on their account.
 
 You can also provide the first task directly:
 
@@ -43,10 +43,16 @@ You can also provide the first task directly:
 wtagent "create hello.js, run it, and verify the output"
 ```
 
+Select a mode explicitly for non-interactive runs:
+
+```bash
+wtagent --once --mode High -C ./project "review this implementation"
+```
+
 For scripts and other agents, combine `--once` with `--json` to emit exactly one machine-readable JSON object on stdout:
 
 ```bash
-wtagent --once --json -C ./project "review this implementation without changing files"
+wtagent --once --json --mode High -C ./project "review this implementation without changing files"
 ```
 
 Successful runs return a stable envelope:
@@ -81,18 +87,18 @@ cd wtagent-demo
 wtagent
 ```
 
-选择 `Pro` 或 `Current`，然后直接输入任务：
+选择 `Instant`、`Medium`、`High` 或 `Current`，然后直接输入任务。`Current` 表示保持 ChatGPT Web 当前已选择的档位。
 
 ```text
 $ wtagent
-you › 创建 hello.js，将“Hello from WTAgent”写入 hello.txt。用 Node.js 运行并验证结果。
+you › 创建 hello.js，将“Hello from WTAgent”写入 hello.txt。用 Node.js 运行并验证输出。
 ```
 
 WTAgent 会在当前目录创建文件、运行本地脚本并检查输出。任务完成后，可以继续在同一个终端中对话。
 
 如果尚未登录 ChatGPT，WTAgent 会打开专用 Chrome 并提示登录；登录成功后任务会自动继续。
 
-无需 OpenAI API Key，也不要求 ChatGPT Pro。WTAgent 使用你自己的 ChatGPT 网页账号、可用模型和额度。
+无需 OpenAI API Key，也不要求 ChatGPT Pro。WTAgent 使用你自己的 ChatGPT 网页账号、可用模型和额度。默认交互选择器提供 ChatGPT Plus 可用的推理档位；已有 Pro 用户在账号可用时仍可以通过 `--mode Pro` 显式请求 Pro。
 
 也可以在启动时直接附带第一个任务：
 
@@ -100,10 +106,16 @@ WTAgent 会在当前目录创建文件、运行本地脚本并检查输出。任
 wtagent "创建 hello.js，运行并验证输出"
 ```
 
+非交互运行可以显式指定档位：
+
+```bash
+wtagent --once --mode High -C ./project "审查当前实现"
+```
+
 脚本或其他 Agent 调用时，可以组合 `--once` 和 `--json`，让 stdout 只输出一个机器可解析的 JSON 对象：
 
 ```bash
-wtagent --once --json -C ./project "审查当前实现，不要修改文件"
+wtagent --once --json --mode High -C ./project "审查当前实现，不要修改文件"
 ```
 
 成功结果格式如下：
