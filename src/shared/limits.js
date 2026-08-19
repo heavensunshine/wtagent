@@ -1,6 +1,8 @@
 export const DEFAULT_LIMITS = Object.freeze({
   maxProtocolErrors: 3,
   maxEmptyAssistantRetries: 3,
+  // Advisory only: reaching it adds one reminder but never stops the run.
+  toolRoundWarningThreshold: 8,
   modelTurnTimeoutMs: 20 * 60_000,
   modelStableWindowMs: 1_500,
   emptyAssistantWindowMs: 10_000,
