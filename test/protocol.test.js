@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   parseAgentResponse,
   serializeToolResult,
+  serializeToolResults,
 } from "../src/protocol/xml-protocol.js";
 
 test("parses a tool call with CDATA and item arrays", () => {
@@ -21,8 +22,73 @@ test("parses a tool call with CDATA and item arrays", () => {
 
   assert.equal(parsed.done, false);
   assert.equal(parsed.toolCall.name, "terminal.exec");
+  assert.equal(parsed.toolCalls.length, 1);
   assert.deepEqual(parsed.toolCall.args.argv, ["run", "build"]);
   assert.equal(parsed.toolCall.args.snippet, 'const x = "<tag>";');
+});
+
+test("parses multiple wrapped tool calls in order", () => {
+  const parsed = parseAgentResponse(`
+<agent_response>
+  <done>false</done>
+  <message>inspect</message>
+  <tool_calls>
+    <tool_call id="source" name="fs.read">
+      <args><path>src/index.js</path></args>
+    </tool_call>
+    <tool_call id="test" name="fs.read">
+      <args><path>test/index.test.js</path></args>
+    </tool_call>
+  </tool_calls>
+</agent_response>`);
+
+  assert.equal(parsed.toolCall, null);
+  assert.deepEqual(
+    parsed.toolCalls.map(({ id, name, args }) => ({ id, name, args })),
+    [
+      { id: "source", name: "fs.read", args: { path: "src/index.js" } },
+      { id: "test", name: "fs.read", args: { path: "test/index.test.js" } },
+    ],
+  );
+});
+
+test("accepts repeated direct tool_call elements for tolerant batching", () => {
+  const parsed = parseAgentResponse(`
+<agent_response>
+  <done>false</done>
+  <tool_call name="fs.read"><args><path>a.txt</path></args></tool_call>
+  <tool_call name="fs.read"><args><path>b.txt</path></args></tool_call>
+</agent_response>`);
+
+  assert.deepEqual(parsed.toolCalls.map((call) => call.args.path), ["a.txt", "b.txt"]);
+});
+
+test("rejects duplicate explicit tool call ids", () => {
+  assert.throws(
+    () => parseAgentResponse(`
+<agent_response>
+  <done>false</done>
+  <tool_calls>
+    <tool_call id="same" name="fs.read"><args><path>a</path></args></tool_call>
+    <tool_call id="same" name="fs.read"><args><path>b</path></args></tool_call>
+  </tool_calls>
+</agent_response>`),
+    /ids must be unique/,
+  );
+});
+
+test("rejects mixing direct and wrapped tool calls", () => {
+  assert.throws(
+    () => parseAgentResponse(`
+<agent_response>
+  <done>false</done>
+  <tool_call name="fs.read"><args><path>a</path></args></tool_call>
+  <tool_calls>
+    <tool_call name="fs.read"><args><path>b</path></args></tool_call>
+  </tool_calls>
+</agent_response>`),
+    /either direct <tool_call> elements or one <tool_calls> wrapper/,
+  );
 });
 
 test("accepts a single xml code fence", () => {
@@ -170,6 +236,15 @@ test("does not recover a tool call from broken XML", () => {
   );
 });
 
+test("does not recover a batch tool call from broken XML", () => {
+  assert.throws(
+    () => parseAgentResponse(
+      `<agent_response><done>false</done><tool_calls><tool_call name="fs.write"><args><path>a.txt<content>oops</args></tool_call></tool_calls></agent_response>`,
+    ),
+    /Invalid XML/,
+  );
+});
+
 test("rejects done=true with a tool call", () => {
   assert.throws(
     () => parseAgentResponse(`
@@ -177,6 +252,21 @@ test("rejects done=true with a tool call", () => {
   <done>true</done>
   <message>x</message>
   <tool_call name="fs.read"><args><path>a</path></args></tool_call>
+</agent_response>`),
+    /cannot also request a tool/,
+  );
+});
+
+test("rejects done=true with batched tool calls", () => {
+  assert.throws(
+    () => parseAgentResponse(`
+<agent_response>
+  <done>true</done>
+  <message>x</message>
+  <tool_calls>
+    <tool_call name="fs.read"><args><path>a</path></args></tool_call>
+    <tool_call name="fs.read"><args><path>b</path></args></tool_call>
+  </tool_calls>
 </agent_response>`),
     /cannot also request a tool/,
   );
@@ -190,9 +280,35 @@ test("serializes a sequential tool result without exposing an internal call id",
     message: "failed",
     stderr: "bad <token>",
   });
+  assert.doesNotMatch(xml, /\sid=/);
   assert.doesNotMatch(xml, /call_id=/);
   assert.match(xml, /status="error"/);
   assert.match(xml, /<!\[CDATA\[bad <token>\]\]>/);
+});
+
+test("serializes batched tool results with stable correlation ids and order", () => {
+  const xml = serializeToolResults([
+    {
+      callId: "call_a",
+      requestId: "source",
+      name: "fs.read",
+      ok: true,
+      message: "source",
+    },
+    {
+      callId: "call_b",
+      requestId: "test",
+      name: "fs.read",
+      ok: false,
+      message: "missing",
+    },
+  ]);
+
+  assert.match(xml, /^<tool_results>/);
+  assert.match(xml, /<tool_result id="source" name="fs\.read" status="ok">/);
+  assert.match(xml, /<tool_result id="test" name="fs\.read" status="error">/);
+  assert.ok(xml.indexOf('id="source"') < xml.indexOf('id="test"'));
+  assert.match(xml, /<\/tool_results>$/);
 });
 
 test("serializes oversized tool data within a UTF-8 byte budget", () => {
@@ -213,5 +329,30 @@ test("serializes oversized tool data within a UTF-8 byte budget", () => {
   assert.match(xml, /<tool_result[^>]+truncated="true"/);
   assert.match(xml, /WTAgent omitted/);
   assert.match(xml, /<\/tool_result>$/);
+  assert.doesNotMatch(xml, /�/);
+});
+
+test("serializes oversized batch results within a shared UTF-8 byte budget", () => {
+  const maxBytes = 24 * 1024;
+  const xml = serializeToolResults([
+    {
+      callId: "call_a",
+      name: "fs.read",
+      ok: true,
+      message: "a",
+      data: { content: "中".repeat(30_000) },
+    },
+    {
+      callId: "call_b",
+      name: "fs.read",
+      ok: true,
+      message: "b",
+      data: { content: "文".repeat(30_000) },
+    },
+  ], { maxBytes });
+
+  assert.ok(Buffer.byteLength(xml, "utf8") <= maxBytes);
+  assert.match(xml, /<tool_results>/);
+  assert.equal([...xml.matchAll(/truncated="true"/g)].length >= 2, true);
   assert.doesNotMatch(xml, /�/);
 });
