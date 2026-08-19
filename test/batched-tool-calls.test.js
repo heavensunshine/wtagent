@@ -8,8 +8,17 @@ import { FakeWebModelAdapter } from "../src/browser/fake-web-model-adapter.js";
 import { createDefaultToolRegistry } from "../src/tools/default-tools.js";
 import { PolicyEngine } from "../src/policy/policy-engine.js";
 import { TaskSession } from "../src/session/task-session.js";
+import { DEFAULT_LIMITS } from "../src/shared/limits.js";
 
-async function createHarness(t, responses, { approval = async () => false } = {}) {
+async function createHarness(
+  t,
+  responses,
+  {
+    approval = async () => false,
+    limits = DEFAULT_LIMITS,
+    onEvent = null,
+  } = {},
+) {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "wtagent-batch-"));
   const projectRoot = path.join(base, "project");
   const tasksDir = path.join(base, "tasks");
@@ -29,6 +38,8 @@ async function createHarness(t, responses, { approval = async () => false } = {}
     policy: new PolicyEngine(),
     session,
     approval,
+    limits,
+    onEvent,
   });
 
   return { base, projectRoot, adapter, session, runtime };
@@ -163,4 +174,107 @@ test("resume aggregates an interrupted side effect with earlier batch results", 
   assert.match(recoveryMessage, /<tool_results>/);
   assert.ok(recoveryMessage.indexOf('id="first"') < recoveryMessage.indexOf('id="second"'));
   assert.match(recoveryMessage, /completion is unknown/);
+});
+
+test("counts a batch as one tool round and warns once at the soft budget", async (t) => {
+  const events = [];
+  const { adapter, runtime } = await createHarness(t, [
+    `<agent_response>
+      <done>false</done>
+      <tool_calls>
+        <tool_call id="list-a" name="fs.list">
+          <args><path>.</path><depth>0</depth><include_hidden>false</include_hidden></args>
+        </tool_call>
+        <tool_call id="list-b" name="fs.list">
+          <args><path>.</path><depth>0</depth><include_hidden>false</include_hidden></args>
+        </tool_call>
+      </tool_calls>
+    </agent_response>`,
+    `<agent_response>
+      <done>false</done>
+      <tool_call id="list-c" name="fs.list">
+        <args><path>.</path><depth>0</depth><include_hidden>false</include_hidden></args>
+      </tool_call>
+    </agent_response>`,
+    `<agent_response>
+      <done>false</done>
+      <tool_call id="list-d" name="fs.list">
+        <args><path>.</path><depth>0</depth><include_hidden>false</include_hidden></args>
+      </tool_call>
+    </agent_response>`,
+    `<agent_response><done>true</done><message>Finished after the warning.</message></agent_response>`,
+  ], {
+    limits: {
+      ...DEFAULT_LIMITS,
+      toolRoundWarningThreshold: 2,
+    },
+    onEvent: async (event) => {
+      events.push(event);
+    },
+  });
+
+  const result = await runtime.run();
+
+  assert.equal(result.message, "Finished after the warning.");
+  assert.equal(adapter.sentMessages.length, 4);
+  assert.doesNotMatch(adapter.sentMessages[1], /<tool_round_budget_warning\b/);
+  assert.match(
+    adapter.sentMessages[2],
+    /<tool_round_budget_warning round="2" budget="2">/,
+  );
+  assert.match(adapter.sentMessages[2], /additional tool rounds remain allowed/);
+  assert.doesNotMatch(adapter.sentMessages[3], /<tool_round_budget_warning\b/);
+
+  const warnings = events.filter(
+    (event) => event.type === "runtime.tool_round_budget_warning",
+  );
+  assert.equal(warnings.length, 1);
+  assert.deepEqual(warnings[0].payload, { round: 2, budget: 2 });
+});
+
+test("resets the soft tool-round budget for each resumed run", async (t) => {
+  const events = [];
+  const listCall = `<agent_response>
+    <done>false</done>
+    <tool_call name="fs.list">
+      <args><path>.</path><depth>0</depth><include_hidden>false</include_hidden></args>
+    </tool_call>
+  </agent_response>`;
+  const { adapter, runtime } = await createHarness(t, [
+    listCall,
+    listCall,
+    `<agent_response><done>true</done><message>First run done.</message></agent_response>`,
+    listCall,
+    listCall,
+    `<agent_response><done>true</done><message>Second run done.</message></agent_response>`,
+  ], {
+    limits: {
+      ...DEFAULT_LIMITS,
+      toolRoundWarningThreshold: 2,
+    },
+    onEvent: async (event) => {
+      events.push(event);
+    },
+  });
+
+  await runtime.run();
+  const resumed = await runtime.run({
+    resume: true,
+    instruction: "Continue the review.",
+  });
+
+  assert.equal(resumed.message, "Second run done.");
+  assert.equal(adapter.sentMessages.length, 6);
+  assert.match(adapter.sentMessages[2], /<tool_round_budget_warning round="2" budget="2">/);
+  assert.doesNotMatch(adapter.sentMessages[4], /<tool_round_budget_warning\b/);
+  assert.match(adapter.sentMessages[5], /<tool_round_budget_warning round="2" budget="2">/);
+
+  const warnings = events.filter(
+    (event) => event.type === "runtime.tool_round_budget_warning",
+  );
+  assert.equal(warnings.length, 2);
+  assert.deepEqual(
+    warnings.map((event) => event.payload),
+    [{ round: 2, budget: 2 }, { round: 2, budget: 2 }],
+  );
 });

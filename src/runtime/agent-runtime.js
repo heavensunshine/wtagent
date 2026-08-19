@@ -38,6 +38,15 @@ const DEAD_REQUEST_CONTINUE_MESSAGE =
   + "from the existing conversation context. Do not repeat any local tool operation "
   + "whose result is already present. Reply using the required <agent_response> XML protocol.";
 
+function buildToolRoundBudgetWarning({ round, budget }) {
+  return `\n<tool_round_budget_warning round="${round}" budget="${budget}">`
+    + "The soft tool-round budget has been reached. Prefer finishing from existing evidence. "
+    + "If more local information is genuinely needed, batch all independent reads or searches "
+    + "into one request and do not reread information already returned. "
+    + "This is advisory; additional tool rounds remain allowed when necessary."
+    + "</tool_round_budget_warning>";
+}
+
 function canonicalize(value) {
   if (Array.isArray(value)) {
     return value.map(canonicalize);
@@ -764,6 +773,9 @@ export class AgentRuntime {
     await this.emit("model.message_sent", { kind: initialKind });
 
     let protocolErrors = 0;
+    let toolRounds = 0;
+    const toolRoundWarningThreshold = this.limits.toolRoundWarningThreshold
+      ?? DEFAULT_LIMITS.toolRoundWarningThreshold;
     const baseTurn = resume ? Number(this.session.state.turn || 0) : 0;
 
     for (let step = 1; ; step += 1) {
@@ -981,6 +993,7 @@ export class AgentRuntime {
         continue;
       }
 
+      toolRounds += 1;
       const plans = [];
       for (const [toolIndex, toolCall] of toolCalls.entries()) {
         plans.push(await this.#prepareToolPlan({
@@ -999,8 +1012,20 @@ export class AgentRuntime {
       replayGuards = [];
 
       const results = await this.#executeToolPlans(plans, { projectRoot });
+      let toolRoundSuffix = "";
+      if (toolRounds === toolRoundWarningThreshold) {
+        await this.emit("runtime.tool_round_budget_warning", {
+          round: toolRounds,
+          budget: toolRoundWarningThreshold,
+        });
+        toolRoundSuffix = buildToolRoundBudgetWarning({
+          round: toolRounds,
+          budget: toolRoundWarningThreshold,
+        });
+      }
       await this.sendToolResult(
         results.length === 1 ? results[0] : results,
+        { suffix: toolRoundSuffix },
       );
       awaitingPendingAcknowledgement = true;
       for (const result of results) {
