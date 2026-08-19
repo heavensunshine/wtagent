@@ -167,11 +167,11 @@ function looseTagText(xml, tag) {
 
 // Last-resort recovery when strict parsing fails. It ONLY salvages a
 // conversational, message-only answer — a response that carries <done> and
-// <message> but no <tool_call>. Tool calls are never recovered this way:
+// <message> but no tool request. Tool calls are never recovered this way:
 // guessing the arguments of a side-effecting operation from broken XML is
 // unsafe, so those still fall through to a format retry.
 function recoverMessageOnlyResponse(envelope) {
-  if (/<tool_call[\s>]/i.test(envelope)) {
+  if (/<tool_call[s]?[\s>]/i.test(envelope)) {
     return null;
   }
   const doneText = looseTagText(envelope, "done");
@@ -190,9 +190,69 @@ function recoverMessageOnlyResponse(envelope) {
     done: done === "true",
     message,
     toolCall: null,
+    toolCalls: [],
     raw: envelope,
     recovered: true,
   };
+}
+
+function parseToolCall(rawToolCall) {
+  if (typeof rawToolCall !== "object" || Array.isArray(rawToolCall)) {
+    throw new ProtocolError("<tool_call> must contain a name and args.");
+  }
+
+  const name = String(rawToolCall.name ?? "").trim();
+  if (!name) {
+    throw new ProtocolError("<tool_call> is missing the name attribute.");
+  }
+
+  const normalizedArgs = normalizeXmlValue(
+    rawToolCall.args ?? rawToolCall.arguments ?? {},
+  );
+  return {
+    id: String(rawToolCall.id ?? "").trim() || null,
+    name,
+    args: typeof normalizedArgs === "string" && !normalizedArgs.trim()
+      ? {}
+      : normalizedArgs,
+  };
+}
+
+function parseToolCalls(response) {
+  const direct = response.tool_call == null || response.tool_call === ""
+    ? []
+    : Array.isArray(response.tool_call)
+      ? response.tool_call
+      : [response.tool_call];
+
+  let wrapped = [];
+  if (response.tool_calls != null && response.tool_calls !== "") {
+    if (
+      typeof response.tool_calls !== "object"
+      || Array.isArray(response.tool_calls)
+    ) {
+      throw new ProtocolError("<tool_calls> must contain <tool_call> elements.");
+    }
+    const rawWrapped = response.tool_calls.tool_call;
+    if (rawWrapped != null && rawWrapped !== "") {
+      wrapped = Array.isArray(rawWrapped) ? rawWrapped : [rawWrapped];
+    }
+  }
+
+  if (direct.length > 0 && wrapped.length > 0) {
+    throw new ProtocolError(
+      "Use either direct <tool_call> elements or one <tool_calls> wrapper, not both.",
+    );
+  }
+
+  const toolCalls = (wrapped.length > 0 ? wrapped : direct).map(parseToolCall);
+  const explicitIds = toolCalls
+    .map((toolCall) => toolCall.id)
+    .filter(Boolean);
+  if (new Set(explicitIds).size !== explicitIds.length) {
+    throw new ProtocolError("Explicit tool call ids must be unique within a turn.");
+  }
+  return toolCalls;
 }
 
 export function parseAgentResponse(rawText) {
@@ -241,36 +301,10 @@ export function parseAgentResponse(rawText) {
 
   const done = parseDone(response.done);
   const message = scalarText(response.message);
-  const rawToolCall = response.tool_call;
+  const toolCalls = parseToolCalls(response);
+  const toolCall = toolCalls.length === 1 ? toolCalls[0] : null;
 
-  if (Array.isArray(rawToolCall)) {
-    throw new ProtocolError("V1 allows at most one <tool_call> per turn.");
-  }
-
-  let toolCall = null;
-  if (rawToolCall != null && rawToolCall !== "") {
-    if (typeof rawToolCall !== "object") {
-      throw new ProtocolError("<tool_call> must contain a name and args.");
-    }
-
-    const name = String(rawToolCall.name ?? "").trim();
-    if (!name) {
-      throw new ProtocolError("<tool_call> is missing the name attribute.");
-    }
-
-    const normalizedArgs = normalizeXmlValue(
-      rawToolCall.args ?? rawToolCall.arguments ?? {},
-    );
-    toolCall = {
-      id: String(rawToolCall.id ?? "").trim() || null,
-      name,
-      args: typeof normalizedArgs === "string" && !normalizedArgs.trim()
-        ? {}
-        : normalizedArgs,
-    };
-  }
-
-  if (done && toolCall) {
+  if (done && toolCalls.length > 0) {
     throw new ProtocolError(
       "A completed response cannot also request a tool. Use done=false.",
     );
@@ -280,6 +314,7 @@ export function parseAgentResponse(rawText) {
     done,
     message,
     toolCall,
+    toolCalls,
     raw: envelope,
   };
 }
@@ -336,15 +371,23 @@ function normalizeResultFields(result) {
   };
 }
 
-function serializeResultFields(result, fields, { originalBytes = null } = {}) {
+function serializeResultFields(
+  result,
+  fields,
+  { originalBytes = null, includeId = false } = {},
+) {
   const status = result.ok ? "ok" : "error";
   const wasTruncated = Object.values(fields).some((field) => field.truncated);
   const truncationAttributes = wasTruncated
     ? ` truncated="true" original_bytes="${originalBytes}"`
     : "";
+  const id = result.requestId ?? result.callId;
+  const idAttribute = includeId && id
+    ? ` id="${escapeXmlAttribute(id)}"`
+    : "";
 
   return [
-    `<tool_result name="${escapeXmlAttribute(result.name)}"`,
+    `<tool_result${idAttribute} name="${escapeXmlAttribute(result.name)}"`,
     ` status="${status}"${truncationAttributes}>`,
     `\n  <message>${cdata(fields.message.text)}</message>`,
     optionalResultField("stdout", fields.stdout),
@@ -354,9 +397,12 @@ function serializeResultFields(result, fields, { originalBytes = null } = {}) {
   ].join("");
 }
 
-export function serializeToolResult(result, { maxBytes = Infinity } = {}) {
+function serializeToolResultInternal(
+  result,
+  { maxBytes = Infinity, includeId = false } = {},
+) {
   const fields = normalizeResultFields(result);
-  let xml = serializeResultFields(result, fields);
+  let xml = serializeResultFields(result, fields, { includeId });
   if (!Number.isFinite(maxBytes) || utf8ByteLength(xml) <= maxBytes) {
     return xml;
   }
@@ -378,7 +424,7 @@ export function serializeToolResult(result, { maxBytes = Infinity } = {}) {
     remaining -= fields[name].includedBytes;
   }
 
-  xml = serializeResultFields(result, fields, { originalBytes });
+  xml = serializeResultFields(result, fields, { originalBytes, includeId });
   for (let pass = 0; pass < 8 && utf8ByteLength(xml) > maxBytes; pass += 1) {
     const excess = utf8ByteLength(xml) - maxBytes;
     const candidate = Object.entries(fields)
@@ -391,11 +437,48 @@ export function serializeToolResult(result, { maxBytes = Infinity } = {}) {
       normalizeResultFields(result)[name].text,
       nextBudget,
     );
-    xml = serializeResultFields(result, fields, { originalBytes });
+    xml = serializeResultFields(result, fields, { originalBytes, includeId });
   }
 
   if (utf8ByteLength(xml) > maxBytes) {
     throw new RangeError(`Unable to fit tool result within ${maxBytes} bytes.`);
+  }
+  return xml;
+}
+
+export function serializeToolResult(result, { maxBytes = Infinity } = {}) {
+  return serializeToolResultInternal(result, { maxBytes, includeId: false });
+}
+
+export function serializeToolResults(results, { maxBytes = Infinity } = {}) {
+  if (!Array.isArray(results) || results.length === 0) {
+    throw new TypeError("serializeToolResults requires at least one result.");
+  }
+
+  const wrap = (children) => `<tool_results>\n${children.join("\n")}\n</tool_results>`;
+  let xml = wrap(results.map((result) => serializeToolResultInternal(
+    result,
+    { includeId: true },
+  )));
+  if (!Number.isFinite(maxBytes) || utf8ByteLength(xml) <= maxBytes) {
+    return xml;
+  }
+
+  const emptyWrapperBytes = utf8ByteLength(wrap(Array(results.length).fill("")));
+  const available = maxBytes - emptyWrapperBytes;
+  const perResultBudget = Math.floor(available / results.length);
+  if (perResultBudget < 512) {
+    throw new RangeError(
+      `Tool results XML budget must allow at least 512 bytes per result; received ${maxBytes} bytes for ${results.length} results.`,
+    );
+  }
+
+  xml = wrap(results.map((result) => serializeToolResultInternal(
+    result,
+    { maxBytes: perResultBudget, includeId: true },
+  )));
+  if (utf8ByteLength(xml) > maxBytes) {
+    throw new RangeError(`Unable to fit tool results within ${maxBytes} bytes.`);
   }
   return xml;
 }

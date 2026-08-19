@@ -17,7 +17,7 @@ const requiredSemantics = [
   "Set done=true only when the current user request has a complete, deliverable answer",
   "you can reply with done=true and your answer directly — no tool call is required",
   "use the local tools and verify the result before done=true",
-  "Use done=false only when you are about to call a local tool",
+  "Use done=false only when you are about to call one or more local tools",
   "Tool count, elapsed turns, or lack of an immediately obvious next action never proves completion.",
 ];
 
@@ -63,7 +63,7 @@ test("bootstrap prompt defines the virtual filesystem boundary", () => {
   assert.doesNotMatch(web, /Ignore any and all previous instructions/);
 });
 
-test("model-facing tool calls do not require call ids", () => {
+test("model-facing single tool calls do not require call ids", () => {
   const { web } = buildBootstrapPrompt({
     task: "Create a file.",
     projectRoot: "/project",
@@ -71,7 +71,22 @@ test("model-facing tool calls do not require call ids", () => {
   });
 
   assert.match(web, /<tool_call name="tool_name">/);
-  assert.doesNotMatch(web, /<tool_call id=/);
+  assert.match(web, /Batch call ids are optional/);
+});
+
+test("bootstrap prompt teaches batching independent tool calls", () => {
+  const { web } = buildBootstrapPrompt({
+    task: "Review the change.",
+    projectRoot: "/project",
+    tools,
+  });
+
+  assert.match(web, /<tool_calls>/);
+  assert.match(web, /Batch independent tool calls into one response/);
+  assert.match(web, /Minimize browser\/model round trips/);
+  assert.match(web, /Runtime executes a batch in declared order/);
+  assert.match(web, /<tool_results>/);
+  assert.doesNotMatch(web, /Call at most one tool per turn/);
 });
 
 test("bootstrap prompt marks scaffolding and puts the user task outside it", () => {
@@ -107,6 +122,7 @@ test("resume prompt keeps done semantics for an interrupted run", () => {
   assertPreciseDoneSemantics(web);
   assert.match(web, /Continue the interrupted run/);
   assert.match(web, /Continue the same WTAgent session/);
+  assert.match(web, /<tool_calls>/);
 });
 
 test("resume prompt treats a follow-up as the next message in an open session", () => {
