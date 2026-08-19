@@ -1,3 +1,5 @@
+import { formatRunTelemetry, RunTelemetry } from "./run-telemetry.js";
+
 // Terminal renderer for the agent event stream.
 //
 // The runtime emits a flat sequence of events (see AgentRuntime.emit). This
@@ -68,6 +70,7 @@ export class Renderer {
     // still emit lifecycle events when they resume the same web conversation,
     // but those milestones are only useful on the first turn.
     this.lifecycleShown = new Set();
+    this.telemetry = new RunTelemetry();
   }
 
   // ---- spinner -----------------------------------------------------------
@@ -252,6 +255,7 @@ export class Renderer {
   // ---- event dispatch ----------------------------------------------------
 
   handle(event) {
+    this.telemetry.handle(event);
     const { type, payload = {} } = event ?? {};
     switch (type) {
       case "browser.started":
@@ -374,6 +378,9 @@ export class Renderer {
         break;
       case "run.completed":
         this.answer(payload.message);
+        this.hint(formatRunTelemetry(
+          this.telemetry.snapshot(event?.timestamp ?? Date.now()),
+        ));
         break;
       case "run.interrupted":
         this.stopSpinner();
