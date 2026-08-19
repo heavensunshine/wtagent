@@ -71,7 +71,17 @@ function humanLog(options, message = "") {
 }
 
 class MachineChatGPTWebAdapter extends ChatGPTWebAdapter {
-  async waitForManualLogin() {
+  constructor(options) {
+    super(options);
+    this.machineAuthGracePending = true;
+  }
+
+  async waitForManualLogin(options) {
+    if (this.machineAuthGracePending) {
+      this.machineAuthGracePending = false;
+      return await super.waitForManualLogin(options);
+    }
+
     throw createMachineModeError(
       "AUTH_REQUIRED",
       "ChatGPT login is required. Run `wtagent login` before using --once --json.",
