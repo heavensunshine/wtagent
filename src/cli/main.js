@@ -3,8 +3,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { Command } from "commander";
 import { confirm, select } from "@inquirer/prompts";
-import { ChatGPTWebAdapter } from "../browser/chatgpt-web-adapter.js";
+import { getWebProvider } from "../browser/web-providers.js";
 import { launchNativeLoginBrowser } from "../browser/native-login.js";
+import { resolveWebProviderConfig } from "../config/web-provider-config.js";
 import {
   ensureDirectory,
   getAppDataDir,
@@ -70,42 +71,50 @@ function humanLog(options, message = "") {
   stream.write(`${message}\n`);
 }
 
-class MachineChatGPTWebAdapter extends ChatGPTWebAdapter {
-  constructor(options) {
-    super(options);
-    this.machineAuthGracePending = true;
-  }
-
-  async waitForManualLogin(options) {
-    if (this.machineAuthGracePending) {
-      this.machineAuthGracePending = false;
-      return await super.waitForManualLogin(options);
+function createMachineWebAdapter(Adapter, provider) {
+  return class MachineWebAdapter extends Adapter {
+    constructor(options) {
+      super(options);
+      this.machineAuthGracePending = true;
     }
 
-    throw createMachineModeError(
-      "AUTH_REQUIRED",
-      "ChatGPT login is required. Run `wtagent login` before using --once --json.",
-    );
-  }
+    async waitForManualLogin(options) {
+      if (this.machineAuthGracePending) {
+        this.machineAuthGracePending = false;
+        return await super.waitForManualLogin(options);
+      }
+
+      throw createMachineModeError(
+        "AUTH_REQUIRED",
+        `${provider.label} login is required. Run \`wtagent --provider ${provider.id} login\` before using --once --json.`,
+      );
+    }
+  };
 }
 
 async function runLogin(options) {
   assertNativeRuntimeSupported();
-  const { profileDir } = resolveRuntimePaths(options);
+  const paths = resolveRuntimePaths(options);
+  const provider = await resolveWebProviderConfig({
+    appDataDir: paths.appDataDir,
+    explicitProvider: options.provider,
+  });
+  const { profileDir } = paths;
   for (;;) {
     console.log(`Opening native Chrome profile: ${profileDir}`);
     console.log(
-      "This window has no CDP flags. Finish until ChatGPT shows your signed-in home/chat history and no Log in button.",
+      `This window has no CDP flags. Finish until ${provider.label} shows your signed-in home/chat history and no Log in button.`,
     );
     const browser = await launchNativeLoginBrowser({
       profileDir,
       chromePath: options.chromePath,
+      url: provider.baseUrl,
     });
 
     try {
       const answer = await promptForText({
         message:
-          "After the signed-in ChatGPT home is visible, press Enter here to save and verify",
+          `After the signed-in ${provider.label} home is visible, press Enter here to save and verify`,
       });
       if (answer == null) {
         return;
@@ -116,9 +125,10 @@ async function runLogin(options) {
       await browser.close();
     }
 
-    const verifier = new ChatGPTWebAdapter({
+    const verifier = new provider.Adapter({
       profileDir,
       chromePath: options.chromePath,
+      baseUrl: provider.baseUrl,
     });
     try {
       await verifier.launch();
@@ -132,7 +142,7 @@ async function runLogin(options) {
         }
       }
       if (authenticated) {
-        console.log("ChatGPT login verified through a fresh CDP connection.");
+        console.log(`${provider.label} login verified through a fresh CDP connection.`);
         return;
       }
     } finally {
@@ -140,15 +150,15 @@ async function runLogin(options) {
     }
 
     console.log(
-      "ChatGPT is still in guest mode. Reopening native Chrome; complete the final ChatGPT sign-in/continue step.",
+      `${provider.label} is still in guest mode. Reopening native Chrome; complete the final sign-in/continue step.`,
     );
   }
 }
 
 // Resets local login by deleting the dedicated Chrome profile. Login state for
-// this app lives entirely in that profile (chatgpt.com cookies + localStorage),
-// so removing it returns wtagent to a clean guest state — useful for testing the
-// full login → run flow. It never touches the real account server-side.
+// web providers lives entirely in that profile (cookies + localStorage), so
+// removing it returns wtagent to a clean guest state. It never touches any
+// account server-side.
 async function runLogout(options) {
   const { profileDir } = resolveRuntimePaths(options);
   const exists = await fs.stat(profileDir)
@@ -174,8 +184,8 @@ async function runLogout(options) {
   if (!options.yes) {
     const confirmed = await confirm({
       message:
-        `This deletes the local ChatGPT session (Chrome profile at ${profileDir}) `
-        + "and requires a new login. Continue?",
+        `This deletes the local web-provider sessions (Chrome profile at ${profileDir}) `
+        + "and requires new logins. Continue?",
       default: false,
     });
     if (!confirmed) {
@@ -191,6 +201,10 @@ async function runLogout(options) {
 
 async function runDoctor(options) {
   const paths = resolveRuntimePaths(options);
+  const provider = await resolveWebProviderConfig({
+    appDataDir: paths.appDataDir,
+    explicitProvider: options.provider,
+  });
   const report = await collectDoctorReport({
     paths,
     chromePath: options.chromePath,
@@ -200,6 +214,7 @@ async function runDoctor(options) {
     const status = item.status.toUpperCase().padEnd(8);
     console.log(`${status} ${item.label}: ${item.detail}`);
   }
+  console.log(`Provider: ${provider.label} (${provider.id}, ${provider.source})`);
   console.log(`Data: ${paths.appDataDir}`);
   console.log(`Profile: ${paths.profileDir}`);
   console.log(report.exitCode === 0 ? "Doctor: OK" : "Doctor: FAILED");
@@ -215,6 +230,7 @@ class ConversationRunner {
     this.session = session;
     this.options = options;
     this.paths = resolveRuntimePaths(options);
+    this.provider = getWebProvider(session.state.provider);
     this.limits = resolveLimits({
       modelTurnTimeoutMs: options.modelTurnTimeoutMs,
     });
@@ -228,15 +244,16 @@ class ConversationRunner {
       filePath: path.join(this.paths.appDataDir, "approvals.json"),
     });
     const Adapter = options.json
-      ? MachineChatGPTWebAdapter
-      : ChatGPTWebAdapter;
+      ? createMachineWebAdapter(this.provider.Adapter, this.provider)
+      : this.provider.Adapter;
     this.adapter = new Adapter({
       profileDir: this.paths.profileDir,
       chromePath: options.chromePath,
+      baseUrl: this.provider.baseUrl,
       debug: options.debug,
       // Minimize by default; `--no-minimize` sets options.minimize === false.
       minimized: options.minimize !== false,
-      // ESC cancels the in-flight turn while ChatGPT is processing. Only in
+      // ESC cancels the in-flight turn while the provider is processing. Only in
       // interactive TTY sessions where stdin is available to listen on.
       cancelOnEsc: interactive,
     });
@@ -586,19 +603,28 @@ async function runAgent(taskParts, options) {
   assertNativeRuntimeSupported();
   const projectRoot = path.resolve(options.project ?? process.cwd());
   await assertDirectory(projectRoot);
+  const paths = resolveRuntimePaths(options);
+  const provider = await resolveWebProviderConfig({
+    appDataDir: paths.appDataDir,
+    explicitProvider: options.provider,
+  });
   const interactive = !options.once && process.stdin.isTTY && process.stdout.isTTY;
   const chatInput = interactive ? new ShellChatInput() : null;
 
   if (interactive) {
-    printChatBanner(projectRoot);
+    printChatBanner(projectRoot, provider.label);
   }
 
-  let requestedMode;
-  if (options.mode != null) {
+  let requestedMode = null;
+  if (!provider.supportsModeSelection) {
+    if (options.mode != null) {
+      throw new Error(`${provider.label} provider does not support --mode.`);
+    }
+  } else if (options.mode != null) {
     requestedMode = normalizeConfiguredMode(options.mode);
   } else if (interactive) {
     const modeChoice = await promptForSelect({
-      message: "ChatGPT mode",
+      message: `${provider.label} mode`,
       choices: CHATGPT_MODE_CHOICES,
     });
     if (modeChoice == null) {
@@ -609,7 +635,7 @@ async function runAgent(taskParts, options) {
     requestedMode = modeFromPromptChoice(modeChoice);
   } else {
     // Non-interactive callers cannot answer a picker. Preserve the current web
-    // setting unless they explicitly opt into `--mode Pro`.
+    // setting unless they explicitly opt into a provider-specific mode.
     requestedMode = null;
   }
 
@@ -639,13 +665,13 @@ async function runAgent(taskParts, options) {
     chatInput.remember(task);
   }
 
-  const paths = resolveRuntimePaths(options);
   await ensureDirectory(paths.sessionsDir);
   const session = await AgentSession.create({
     sessionsDir: paths.sessionsDir,
     task,
     projectRoot,
     mode: requestedMode,
+    provider: provider.id,
   });
 
   // Resolve @file attachments in the opening task, if any. The task itself is
@@ -669,12 +695,12 @@ async function runAgent(taskParts, options) {
   return await executeSession({ session, options, files, chatInput });
 }
 
-function printChatBanner(projectRoot) {
+function printChatBanner(projectRoot, providerLabel = "ChatGPT") {
   const CYAN = "\x1b[36m";
   const DIM = "\x1b[2m";
   const RESET = "\x1b[0m";
   console.log("");
-  console.log(`${CYAN}WTAgent${RESET} ${DIM}· GPT Web · ${projectRoot}${RESET}`);
+  console.log(`${CYAN}WTAgent${RESET} ${DIM}· ${providerLabel} Web · ${projectRoot}${RESET}`);
   console.log(`${DIM}Enter sends · Shift+Enter newline · ESC cancels processing · multiline paste · ↑/↓ history · "exit", Ctrl+C, or Ctrl+D quits${RESET}`);
   console.log("");
 }
@@ -702,13 +728,25 @@ async function runResume(sessionId, instructionParts, options) {
   await ensureDirectory(paths.sessionsDir);
   const session = await loadSession(paths, sessionId);
   await assertDirectory(session.state.projectRoot);
+  const provider = getWebProvider(session.state.provider);
+  if (options.provider != null) {
+    const requestedProvider = getWebProvider(options.provider);
+    if (requestedProvider.id !== provider.id) {
+      throw new Error(
+        `Session ${sessionId} uses provider ${provider.id}; it cannot be resumed with ${requestedProvider.id}. Start a new session to change providers.`,
+      );
+    }
+  }
 
-  // Like a fresh run, interactive resumes offer a mode choice, defaulting to
-  // the mode the conversation is already on. `--mode` overrides it and also
-  // works non-interactively. This matters after a usage limit, where switching
-  // thinking levels (Pro vs Current) before retrying can get past the block.
-  let requestedMode;
-  if (options.mode != null) {
+  // Like a fresh run, interactive resumes offer a mode choice when the provider
+  // supports it. The provider stored with the session is authoritative so a
+  // config change cannot redirect an existing conversation to another site.
+  let requestedMode = null;
+  if (!provider.supportsModeSelection) {
+    if (options.mode != null) {
+      throw new Error(`${provider.label} provider does not support --mode.`);
+    }
+  } else if (options.mode != null) {
     requestedMode = normalizeConfiguredMode(options.mode);
   } else if (
     !options.once
@@ -716,7 +754,7 @@ async function runResume(sessionId, instructionParts, options) {
     && process.stdout.isTTY
   ) {
     const modeChoice = await promptForSelect({
-      message: "ChatGPT mode",
+      message: `${provider.label} mode`,
       choices: CHATGPT_MODE_CHOICES,
       default: session.state.activeMode === "Pro" ? "pro" : "current",
     });
@@ -831,10 +869,11 @@ const program = new Command()
   .option("--home <path>", "Application data directory")
   .option("--profile-dir <path>", "Dedicated Chrome profile directory")
   .option("--chrome-path <path>", "Chrome/Chromium executable")
+  .option("--provider <name>", 'Web AI provider (default/config: "chatgpt")')
   .option("-C, --project <path>", "Project directory", process.cwd())
   .option(
     "--mode <name>",
-    'ChatGPT mode: "Pro" selects Pro; "Current" keeps the web setting',
+    'Provider mode (ChatGPT: "Pro" selects Pro; "Current" keeps the web setting)',
   )
   .option(
     "--once",
@@ -848,7 +887,7 @@ const program = new Command()
   )
   .option(
     "--model-turn-timeout-ms <milliseconds>",
-    "Maximum wait for one ChatGPT response (default: 1200000)",
+    "Maximum wait for one web AI response (default: 1200000)",
   )
   .option(
     "--no-minimize",
@@ -892,17 +931,17 @@ program.hook("preAction", (thisCommand, actionCommand) => {
 
 program
   .command("doctor")
-  .description("Check Node, Chrome, and local data directories.")
+  .description("Check Node, Chrome, provider config, and local data directories.")
   .action(async (_, command) => runDoctor(command.optsWithGlobals()));
 
 program
   .command("login")
-  .description("Open the dedicated Chrome profile and wait for ChatGPT login.")
+  .description("Open the dedicated Chrome profile and wait for provider login.")
   .action(async (_, command) => runLogin(command.optsWithGlobals()));
 
 program
   .command("logout")
-  .description("Delete the local Chrome profile to reset the ChatGPT session.")
+  .description("Delete the local Chrome profile to reset web-provider logins.")
   .option("--yes", "Skip the confirmation prompt", false)
   .action(async (options, command) => {
     await runLogout({ ...command.optsWithGlobals(), ...options });
@@ -915,7 +954,7 @@ program
   .argument("[instruction...]", "Optional follow-up instruction")
   .option(
     "--mode <name>",
-    'ChatGPT mode: "Pro" selects Pro; "Current" keeps the web setting',
+    'Provider mode (ChatGPT: "Pro" selects Pro; "Current" keeps the web setting)',
   )
   .action(async (sessionId, instruction, _, command) => {
     await runResume(
