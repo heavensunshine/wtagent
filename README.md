@@ -41,6 +41,20 @@ You can also provide the first task directly:
 wtagent "create hello.js, run it, and verify the output"
 ```
 
+For scripts and other agents, combine `--once` with `--json` to emit exactly one machine-readable JSON object on stdout:
+
+```bash
+wtagent --once --json -C ./project "review this implementation without changing files"
+```
+
+Successful runs return a stable envelope:
+
+```json
+{"schemaVersion":1,"status":"completed","sessionId":"session_...","result":"...","projectRoot":"/path/to/project"}
+```
+
+Human-readable progress is written to stderr in JSON mode. The mode is intentionally non-interactive: run `wtagent login` first. If authentication is missing, WTAgent returns `AUTH_REQUIRED`; if a tool requires manual approval, it returns `APPROVAL_REQUIRED` instead of waiting for input.
+
 Multiline paste and `↑` / `↓` input history are supported. Press `Ctrl+C` or `Ctrl+D` to exit.
 
 ## 中文
@@ -81,6 +95,20 @@ WTAgent 会在当前目录创建文件、运行本地脚本并检查输出。任
 ```bash
 wtagent "创建 hello.js，运行并验证输出"
 ```
+
+脚本或其他 Agent 调用时，可以组合 `--once` 和 `--json`，让 stdout 只输出一个机器可解析的 JSON 对象：
+
+```bash
+wtagent --once --json -C ./project "审查当前实现，不要修改文件"
+```
+
+成功结果格式如下：
+
+```json
+{"schemaVersion":1,"status":"completed","sessionId":"session_...","result":"...","projectRoot":"/path/to/project"}
+```
+
+JSON 模式下，人类可读的进度信息写入 stderr。该模式刻意保持非交互：请先运行 `wtagent login`。如果登录状态缺失，WTAgent 返回 `AUTH_REQUIRED`；如果工具需要人工授权，则返回 `APPROVAL_REQUIRED`，而不是停下来等待输入。
 
 支持多行粘贴和 `↑` / `↓` 输入历史。使用 `Ctrl+C` 或 `Ctrl+D` 退出。
 

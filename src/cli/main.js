@@ -35,6 +35,12 @@ import {
 } from "./prompt-input.js";
 import { createRenderer } from "./render-events.js";
 import {
+  createMachineError,
+  createMachineModeError,
+  createMachineSuccess,
+  writeMachineOutput,
+} from "./machine-output.js";
+import {
   CHATGPT_MODE_CHOICES,
   modeFromPromptChoice,
   normalizeConfiguredMode,
@@ -56,6 +62,20 @@ async function assertDirectory(directory) {
   const stat = await fs.stat(directory).catch(() => null);
   if (!stat?.isDirectory()) {
     throw new Error(`Project directory does not exist: ${directory}`);
+  }
+}
+
+function humanLog(options, message = "") {
+  const stream = options?.json ? process.stderr : process.stdout;
+  stream.write(`${message}\n`);
+}
+
+class MachineChatGPTWebAdapter extends ChatGPTWebAdapter {
+  async waitForManualLogin() {
+    throw createMachineModeError(
+      "AUTH_REQUIRED",
+      "ChatGPT login is required. Run `wtagent login` before using --once --json.",
+    );
   }
 }
 
@@ -189,13 +209,18 @@ class ConversationRunner {
       modelTurnTimeoutMs: options.modelTurnTimeoutMs,
     });
     this.processManager = new ProcessManager();
-    this.renderer = createRenderer();
+    this.renderer = createRenderer({
+      stream: options.json ? process.stderr : process.stdout,
+    });
     // "Always allow" decisions from the approval prompt persist here across
     // turns, resumes, and separate sessions.
     this.approvalStore = new ApprovalStore({
       filePath: path.join(this.paths.appDataDir, "approvals.json"),
     });
-    this.adapter = new ChatGPTWebAdapter({
+    const Adapter = options.json
+      ? MachineChatGPTWebAdapter
+      : ChatGPTWebAdapter;
+    this.adapter = new Adapter({
       profileDir: this.paths.profileDir,
       chromePath: options.chromePath,
       debug: options.debug,
@@ -220,6 +245,16 @@ class ConversationRunner {
       session: this.session,
       limits: this.limits,
       approval: async ({ toolCall, reasons }) => {
+        if (this.options.json) {
+          throw createMachineModeError(
+            "APPROVAL_REQUIRED",
+            `Approval required for ${toolCall.name}.`,
+            {
+              tool: toolCall.name,
+              reasons,
+            },
+          );
+        }
         this.renderer.stopSpinner();
         console.log(`\n${"\x1b[33m"}Approval required for ${toolCall.name}:${"\x1b[0m"}`);
         for (const reason of reasons) {
@@ -340,7 +375,8 @@ class ConversationRunner {
     this.renderer.finish();
     await this.processManager.stopAll().catch(() => {});
     if (keepBrowser) {
-      console.log(
+      humanLog(
+        this.options,
         "The run failed; Chrome was left open for debugging. "
           + "Inspect the page and close it manually, or just run "
           + "`wtagent resume` again — it will reuse this window.",
@@ -373,7 +409,7 @@ async function executeSession({
     }
     runner.interrupted = true;
     runner.renderer.stopSpinner();
-    console.log("\nStopping managed processes and Chrome…");
+    humanLog(options, "\nStopping managed processes and Chrome…");
     await runner.close();
     process.exitCode = 130;
   };
@@ -471,21 +507,21 @@ async function executeSession({
   } finally {
     process.removeListener("SIGINT", onInterrupt);
     activeChatInput?.close();
-    await runner.close({ keepBrowser: runFailed });
-    console.log(`Session saved at: ${session.directory}`);
-    printResumeHint(session.sessionId);
+    await runner.close({ keepBrowser: runFailed && !options.json });
+    humanLog(options, `Session saved at: ${session.directory}`);
+    printResumeHint(session.sessionId, options);
   }
 }
 
 // A highly visible, blank-line-separated hint for continuing the conversation,
 // printed last so it is not lost in the run output (like Claude Code).
-function printResumeHint(sessionId) {
+function printResumeHint(sessionId, options = {}) {
   const rule = "─".repeat(48);
-  console.log("");
-  console.log(rule);
-  console.log(`Resume this conversation with: wtagent resume ${sessionId}`);
-  console.log(rule);
-  console.log("");
+  humanLog(options, "");
+  humanLog(options, rule);
+  humanLog(options, `Resume this conversation with: wtagent resume ${sessionId}`);
+  humanLog(options, rule);
+  humanLog(options, "");
 }
 
 // Reads the user's next message from the interactive prompt. Empty input simply
@@ -570,6 +606,12 @@ async function runAgent(taskParts, options) {
   // In interactive mode an initial task is optional: the user can just start
   // typing at the prompt. In one-shot mode a task is required.
   let task = taskParts.join(" ").trim();
+  if (!task && options.json) {
+    throw createMachineModeError(
+      "TASK_REQUIRED",
+      "A task is required when using --once --json.",
+    );
+  }
   if (!task) {
     const initialMessage = interactive
       ? await readChatMessage(() => chatInput.read())
@@ -604,10 +646,11 @@ async function runAgent(taskParts, options) {
     const { files: found, missing } = await extractAtMentions(task, projectRoot);
     files = found;
     if (found.length > 0) {
-      console.log(`Attaching: ${found.map((file) => file.name).join(", ")}`);
+      humanLog(options, `Attaching: ${found.map((file) => file.name).join(", ")}`);
     }
     if (missing.length > 0) {
-      console.log(
+      humanLog(
+        options,
         `Not attached (${missing.map((m) => `${m.requested}: ${m.reason}`).join("; ")})`,
       );
     }
@@ -789,6 +832,11 @@ const program = new Command()
     false,
   )
   .option(
+    "--json",
+    "Emit one machine-readable JSON object to stdout (requires --once)",
+    false,
+  )
+  .option(
     "--model-turn-timeout-ms <milliseconds>",
     "Maximum wait for one ChatGPT response (default: 1200000)",
   )
@@ -802,8 +850,35 @@ const program = new Command()
     "Initial request (optional; you can also type at the prompt)",
   )
   .action(async (task, _, command) => {
-    await runAgent(task, command.optsWithGlobals());
+    const options = command.optsWithGlobals();
+    const result = await runAgent(task, options);
+    if (options.json) {
+      writeMachineOutput(createMachineSuccess({
+        sessionId: result.sessionId,
+        message: result.message,
+        projectRoot: path.resolve(options.project ?? process.cwd()),
+      }));
+    }
   });
+
+program.hook("preAction", (thisCommand, actionCommand) => {
+  const options = thisCommand.optsWithGlobals();
+  if (!options.json) {
+    return;
+  }
+  if (actionCommand !== program) {
+    throw createMachineModeError(
+      "JSON_ONE_SHOT_ONLY",
+      "--json is only supported for a top-level one-shot task.",
+    );
+  }
+  if (!options.once) {
+    throw createMachineModeError(
+      "JSON_REQUIRES_ONCE",
+      "--json requires --once.",
+    );
+  }
+});
 
 program
   .command("doctor")
@@ -859,6 +934,10 @@ program
   });
 
 program.parseAsync().catch((error) => {
-  console.error(error.stack ?? error.message);
+  if (program.opts().json) {
+    writeMachineOutput(createMachineError(error));
+  } else {
+    console.error(error.stack ?? error.message);
+  }
   process.exitCode = 1;
 });

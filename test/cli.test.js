@@ -12,6 +12,14 @@ const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
+const unsupportedWslHost = process.platform === "linux" && Boolean(
+  process.env.WSL_INTEROP
+    || process.env.WSL_DISTRO_NAME
+    || /\b(microsoft|wsl)\b/i.test(os.release()),
+);
+const unsupportedWslSkip = unsupportedWslHost
+  ? "the main branch intentionally rejects WSL before agent execution"
+  : false;
 
 test("package exposes only the wtagent executable", async () => {
   const manifest = JSON.parse(
@@ -36,11 +44,14 @@ test("CLI help and version use the WTAgent package identity", async () => {
   assert.match(help, /Turn your web AI session into a local tool-using agent/);
   assert.match(help, /\[task\.\.\.\]/);
   assert.match(help, /-C, --project <path>/);
+  assert.match(help, /--json/);
   assert.doesNotMatch(help, /^\s+run(?:\s|$)/m);
   assert.equal(version.trim(), "0.1.0");
 });
 
-test("a task is accepted directly without a run subcommand", async () => {
+test("a task is accepted directly without a run subcommand", {
+  skip: unsupportedWslSkip,
+}, async () => {
   const entry = path.join(repositoryRoot, "src", "cli", "main.js");
   const missingProject = path.join(
     repositoryRoot,
@@ -65,6 +76,108 @@ test("a task is accepted directly without a run subcommand", async () => {
         ),
       );
       assert.doesNotMatch(error.stderr, /unknown command/i);
+      return true;
+    },
+  );
+});
+
+test("--json requires --once and returns one JSON error on stdout", async () => {
+  const entry = path.join(repositoryRoot, "src", "cli", "main.js");
+
+  await assert.rejects(
+    execFileAsync(process.execPath, [entry, "--json", "inspect", "this"]),
+    (error) => {
+      const output = error.stdout.trim();
+      assert.equal(output.split(/\r?\n/).length, 1);
+      assert.deepEqual(JSON.parse(output), {
+        schemaVersion: 1,
+        status: "error",
+        error: {
+          code: "JSON_REQUIRES_ONCE",
+          message: "--json requires --once.",
+        },
+      });
+      assert.equal(error.stderr, "");
+      return true;
+    },
+  );
+});
+
+test("--once --json requires a task instead of prompting", {
+  skip: unsupportedWslSkip,
+}, async () => {
+  const entry = path.join(repositoryRoot, "src", "cli", "main.js");
+
+  await assert.rejects(
+    execFileAsync(process.execPath, [
+      entry,
+      "--once",
+      "--json",
+      "-C",
+      repositoryRoot,
+    ]),
+    (error) => {
+      assert.deepEqual(JSON.parse(error.stdout.trim()), {
+        schemaVersion: 1,
+        status: "error",
+        error: {
+          code: "TASK_REQUIRED",
+          message: "A task is required when using --once --json.",
+        },
+      });
+      assert.equal(error.stderr, "");
+      return true;
+    },
+  );
+});
+
+test("JSON mode keeps ordinary CLI failures machine-readable", {
+  skip: unsupportedWslSkip,
+}, async () => {
+  const entry = path.join(repositoryRoot, "src", "cli", "main.js");
+  const missingProject = path.join(
+    repositoryRoot,
+    "test",
+    `missing-json-project-${process.pid}`,
+  );
+
+  await assert.rejects(
+    execFileAsync(process.execPath, [
+      entry,
+      "--once",
+      "--json",
+      "-C",
+      missingProject,
+      "inspect",
+      "this",
+    ]),
+    (error) => {
+      const payload = JSON.parse(error.stdout.trim());
+      assert.equal(payload.schemaVersion, 1);
+      assert.equal(payload.status, "error");
+      assert.equal(payload.error.code, "WTAGENT_ERROR");
+      assert.match(payload.error.message, /Project directory does not exist/);
+      assert.equal(error.stderr, "");
+      return true;
+    },
+  );
+});
+
+test("--json rejects subcommands before they write human output", async () => {
+  const entry = path.join(repositoryRoot, "src", "cli", "main.js");
+
+  await assert.rejects(
+    execFileAsync(process.execPath, [entry, "--json", "doctor"]),
+    (error) => {
+      assert.deepEqual(JSON.parse(error.stdout.trim()), {
+        schemaVersion: 1,
+        status: "error",
+        error: {
+          code: "JSON_ONE_SHOT_ONLY",
+          message: "--json is only supported for a top-level one-shot task.",
+        },
+      });
+      assert.equal(error.stderr, "");
       return true;
     },
   );
