@@ -141,6 +141,7 @@ function sessionMetaRecord(state) {
       cwd: state.projectRoot,
       originator: "wtagent",
       source: "wtagent",
+      provider: state.provider,
       base_instructions: null,
     },
   };
@@ -155,7 +156,14 @@ export class AgentSession {
     this.stateFileName = stateFileName;
   }
 
-  static async create({ sessionsDir, tasksDir, task, projectRoot, mode }) {
+  static async create({
+    sessionsDir,
+    tasksDir,
+    task,
+    projectRoot,
+    mode,
+    provider = "chatgpt",
+  }) {
     const root = await ensureSessionsRoot(sessionsDir ?? tasksDir);
     const sessionId = `session_${new Date().toISOString().replaceAll(/[-:.TZ]/g, "").slice(0, 14)}_${randomUUID().slice(0, 8)}`;
     const directory = path.join(root, sessionId);
@@ -168,6 +176,7 @@ export class AgentSession {
       task,
       projectRoot: path.resolve(projectRoot),
       mode,
+      provider,
       phase: "idle",
       turn: 0,
       runCount: 0,
@@ -198,6 +207,7 @@ export class AgentSession {
       task,
       projectRoot: state.projectRoot,
       mode,
+      provider,
     });
     return session;
   }
@@ -238,6 +248,7 @@ export class AgentSession {
       ? "idle"
       : (state.status ?? "idle");
     state.runCount ??= 0;
+    state.provider ??= "chatgpt";
     state.lastAssistantMessageId ??= null;
     state.activeMode ??= null;
     state.rolloutFile ??= "transcript.jsonl";
@@ -413,6 +424,7 @@ export class AgentSession {
       baseInstructions: storedMeta?.base_instructions ?? null,
       task: this.state.task,
       mode: this.state.mode,
+      provider: storedMeta?.provider ?? this.state.provider,
     };
   }
 
