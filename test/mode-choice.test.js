@@ -6,20 +6,25 @@ import {
   normalizeConfiguredMode,
 } from "../src/cli/mode-choice.js";
 
-test("interactive mode choices offer Pro and the current web setting", () => {
+test("interactive mode choices offer Plus levels and the current web setting", () => {
   assert.deepEqual(
     CHATGPT_MODE_CHOICES.map(({ value }) => value),
-    ["pro", "current"],
+    ["instant", "medium", "high", "current"],
   );
-  assert.equal(modeFromPromptChoice("pro"), "Pro");
+  assert.equal(modeFromPromptChoice("instant"), "Instant");
+  assert.equal(modeFromPromptChoice("medium"), "Medium");
+  assert.equal(modeFromPromptChoice("high"), "High");
   assert.equal(modeFromPromptChoice("current"), null);
 });
 
-test("configured mode accepts only Pro or Current", () => {
-  assert.equal(normalizeConfiguredMode("pro"), "Pro");
+test("configured mode accepts Plus levels and preserves Pro compatibility", () => {
+  assert.equal(normalizeConfiguredMode("instant"), "Instant");
+  assert.equal(normalizeConfiguredMode("MEDIUM"), "Medium");
+  assert.equal(normalizeConfiguredMode("High"), "High");
   assert.equal(normalizeConfiguredMode("CURRENT"), null);
+  assert.equal(normalizeConfiguredMode("pro"), "Pro");
   assert.throws(
     () => normalizeConfiguredMode("Extra High"),
-    /either "Pro" or "Current"/,
+    /Instant.*Medium.*High.*Current.*Pro/,
   );
 });

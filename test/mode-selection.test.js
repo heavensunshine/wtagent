@@ -8,11 +8,13 @@ import {
 } from "../src/browser/mode-selection.js";
 
 // A realistic menu in DOM order. Slugs are stable, language-independent
-// attribute values; labels are localized and must NOT drive selection.
+// attribute values; labels are localized and must NOT drive selection unless
+// current ChatGPT markup exposes no stable identifier.
 function menu({ proDisabled = false, includePro = true } = {}) {
   const options = [
-    { index: 0, slug: "model-switcher-gpt-4o", label: "GPT-4o", disabled: false },
-    { index: 1, slug: "model-switcher-o3-extra-high", label: "Extra high", disabled: false },
+    { index: 0, slug: "model-switcher-instant", label: "Instant\n5.5", disabled: false },
+    { index: 1, slug: "model-switcher-medium", label: "Medium", disabled: false },
+    { index: 2, slug: "model-switcher-high", label: "High", disabled: false },
   ];
   if (includePro) {
     options.push({ index: options.length, slug: "model-switcher-pro", label: "专业版", disabled: proDisabled });
@@ -23,13 +25,38 @@ function menu({ proDisabled = false, includePro = true } = {}) {
 test("slug matching is language independent", () => {
   assert.equal(slugMatchesToken("model-switcher-pro", "pro"), true);
   assert.equal(slugMatchesToken("provider-picker", "pro"), false, "short token must match a whole segment");
+  assert.equal(slugMatchesToken("model-switcher-medium", normalizeToken("Medium")), true);
   assert.equal(slugMatchesToken("o3-extra-high", normalizeToken("Extra high")), true);
+});
+
+test("selects Instant, Medium, and High from stable picker slugs", () => {
+  for (const [requested, targetIndex] of [
+    ["Instant", 0],
+    ["Medium", 1],
+    ["High", 2],
+  ]) {
+    const choice = chooseModeOption(menu(), requested);
+    assert.equal(choice.status, "select");
+    assert.equal(choice.targetIndex, targetIndex);
+  }
+});
+
+test("selects Plus modes by exact label when the current menu exposes no stable ids", () => {
+  const options = [
+    { index: 0, slug: "", label: "Instant\n5.5", disabled: false },
+    { index: 1, slug: "", label: "Medium", disabled: false },
+    { index: 2, slug: "", label: "High", disabled: false },
+  ];
+
+  assert.equal(chooseModeOption(options, "Instant").targetIndex, 0);
+  assert.equal(chooseModeOption(options, "Medium").targetIndex, 1);
+  assert.equal(chooseModeOption(options, "High").targetIndex, 2);
 });
 
 test("selects Pro when it is enabled", () => {
   const choice = chooseModeOption(menu(), "Pro");
   assert.equal(choice.status, "select");
-  assert.equal(choice.targetIndex, 2);
+  assert.equal(choice.targetIndex, 3);
 });
 
 test("recognizes Pro when the menu marks it as selected", () => {
@@ -70,8 +97,8 @@ test("label fallback is exact and does not match unrelated text", () => {
 test("falls back to the previous option when Pro is limited", () => {
   const choice = chooseModeOption(menu({ proDisabled: true }), "Pro");
   assert.equal(choice.status, "fallback");
-  assert.equal(choice.targetIndex, 1);
-  assert.equal(choice.selectedLabel, "Extra high");
+  assert.equal(choice.targetIndex, 2);
+  assert.equal(choice.selectedLabel, "High");
 });
 
 test("reports unavailable when Pro is absent", () => {
@@ -115,7 +142,7 @@ test("retries when the menu first reads empty (Radix async populate race)", asyn
       return reads === 1 ? [] : menu();
     },
   });
-  const result = await runModeSelection(port, "Pro");
+  const result = await runModeSelection(port, "High");
   assert.equal(result.status, "select");
   assert.equal(result.attempts, 2);
   assert.equal(port.calls.openMenu, 2);
@@ -125,12 +152,12 @@ test("returns fallback result the runtime can surface without throwing", async (
   const port = fakePort({ readOptions: async () => menu({ proDisabled: true }) });
   const result = await runModeSelection(port, "Pro");
   assert.equal(result.status, "fallback");
-  assert.equal(port.calls.clickOption.at(-1), 1);
+  assert.equal(port.calls.clickOption.at(-1), 2);
 });
 
 test("skips work when already on the requested mode", async () => {
   const port = fakePort({ alreadyOnMode: async () => true });
-  const result = await runModeSelection(port, "Pro");
+  const result = await runModeSelection(port, "Medium");
   assert.equal(result.status, "already");
   assert.equal(port.calls.openMenu, 0);
 });
@@ -145,15 +172,15 @@ test("verifies the selected label after clicking instead of only menu closure", 
     },
   });
 
-  const result = await runModeSelection(port, "Pro");
+  const result = await runModeSelection(port, "High");
 
   assert.equal(result.status, "select");
-  assert.deepEqual(selectedLabels, ["Pro"]);
+  assert.deepEqual(selectedLabels, ["High"]);
 });
 
 test("reports missing switcher instead of throwing", async () => {
   const port = fakePort({ hasSwitcher: async () => false });
-  const result = await runModeSelection(port, "Pro");
+  const result = await runModeSelection(port, "High");
   assert.equal(result.status, "switcher_not_found");
   assert.deepEqual(port.calls.diagnostics, ["mode-switcher-not-found"]);
 });
