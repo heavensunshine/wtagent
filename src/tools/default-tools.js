@@ -11,6 +11,7 @@ import {
 } from "../policy/path-guard.js";
 import { ToolRegistry } from "./registry.js";
 import { runProgram } from "./terminal-exec.js";
+import { registerRepoInspectTool } from "./repo-inspect.js";
 import { resolveLaunchPlan } from "../platform/command-launcher.js";
 import {
   DEFAULT_SEARCH_EXCLUDED_DIRS,
@@ -245,6 +246,7 @@ export function createDefaultToolRegistry({
   limits = DEFAULT_LIMITS,
 } = {}) {
   const registry = new ToolRegistry();
+  registerRepoInspectTool(registry, { limits });
 
   registry.register({
     name: "fs.list",
