@@ -1,13 +1,30 @@
 import { ChatGPTWebAdapter } from "./chatgpt-web-adapter.js";
+import { createRequestGuardedAdapter } from "./request-guarded-adapter.js";
+import { isUsageLimitNotice } from "../shared/usage-limit.js";
 
 export const DEFAULT_WEB_PROVIDER = "chatgpt";
+
+function isChatGPTLimitTransportNotice(text) {
+  const value = String(text ?? "");
+  const hasCompleteEnvelope = value.includes("<agent_response")
+    && value.includes("</agent_response>");
+  return !hasCompleteEnvelope && isUsageLimitNotice(value);
+}
+
+const GuardedChatGPTWebAdapter = createRequestGuardedAdapter(
+  ChatGPTWebAdapter,
+  {
+    providerId: "chatgpt",
+    isLimitNotice: isChatGPTLimitTransportNotice,
+  },
+);
 
 const PROVIDERS = Object.freeze({
   chatgpt: Object.freeze({
     id: "chatgpt",
     label: "ChatGPT",
     baseUrl: "https://chatgpt.com/",
-    Adapter: ChatGPTWebAdapter,
+    Adapter: GuardedChatGPTWebAdapter,
     supportsModeSelection: true,
   }),
 });
