@@ -86,6 +86,7 @@ Files:
 - [`AGENTS.md`](./AGENTS.md) — persistent Codex orchestration rules.
 - [`scripts/codex-wtagent.ps1`](./scripts/codex-wtagent.ps1) — PowerShell `plan` / `review` machine wrapper.
 - [`docs/codex-wtagent-workflow.md`](./docs/codex-wtagent-workflow.md) — full workflow, failure handling, review loop, and safety notes.
+- [`docs/original-vs-codex-workflow.md`](./docs/original-vs-codex-workflow.md) — comparison of upstream WTAgent, the upstream OpenCode demo, and this fork's Codex orchestration.
 
 Example:
 
@@ -168,6 +169,8 @@ JSON 模式下，人类可读的进度信息写入 stderr。该模式刻意保�
 ### 本 fork 的 Codex / OpenCode 集成
 
 Codex 三段式工作流：[`docs/codex-wtagent-workflow.md`](./docs/codex-wtagent-workflow.md)。
+
+原版 WTAgent / OpenCode demo / Codex 三段式对比：[`docs/original-vs-codex-workflow.md`](./docs/original-vs-codex-workflow.md)。
 
 Codex 持久规则：[`AGENTS.md`](./AGENTS.md)。
 
