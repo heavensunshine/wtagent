@@ -65,6 +65,43 @@ Human-readable progress is written to stderr in JSON mode. The mode is intention
 
 Multiline paste and `↑` / `↓` input history are supported. Press `Ctrl+C` or `Ctrl+D` to exit.
 
+## Agent integrations in this fork
+
+This fork includes ready-to-use integration patterns for external coding agents.
+
+### Codex: Architect → Executor → Verifier
+
+Codex remains the repository-writing Executor. WTAgent + ChatGPT Web can be used as an independent high-reasoning Architect before implementation and Verifier after tests.
+
+```text
+WTAgent High/Pro planning
+        ↓
+Codex implementation + tests
+        ↓
+WTAgent High/Pro independent review
+```
+
+Files:
+
+- [`AGENTS.md`](./AGENTS.md) — persistent Codex orchestration rules.
+- [`scripts/codex-wtagent.ps1`](./scripts/codex-wtagent.ps1) — PowerShell `plan` / `review` machine wrapper.
+- [`docs/codex-wtagent-workflow.md`](./docs/codex-wtagent-workflow.md) — full workflow, failure handling, review loop, and safety notes.
+
+Example:
+
+```powershell
+pwsh -File ./scripts/codex-wtagent.ps1 -Phase plan -Mode Pro -Task "<task>"
+# Codex implements and tests
+pwsh -File ./scripts/codex-wtagent.ps1 -Phase review -Mode Pro -Task "<task>" -Acceptance "<criteria>"
+```
+
+The wrapper checks the Git worktree before and after the Architect/Verifier call and fails if WTAgent unexpectedly changes it. This detects a read-only contract violation but is not a hard filesystem sandbox.
+
+### OpenCode custom tool
+
+- [`docs/opencode-integration.md`](./docs/opencode-integration.md) — detailed OpenCode call chain.
+- [`examples/opencode/wtagent.ts`](./examples/opencode/wtagent.ts) — OpenCode custom tool example with `Pro` mode support.
+
 ## 中文
 
 WTAgent 将 GPT 网页聊天连接到本地项目：GPT 在浏览器中思考，WTAgent 在你的电脑上读写本地文件并运行命令。
@@ -127,6 +164,16 @@ wtagent --once --json --mode High -C ./project "审查当前实现，不要修�
 JSON 模式下，人类可读的进度信息写入 stderr。该模式刻意保持非交互：请先运行 `wtagent login`。如果登录状态缺失，WTAgent 返回 `AUTH_REQUIRED`；如果工具需要人工授权，则返回 `APPROVAL_REQUIRED`，而不是停下来等待输入。
 
 支持多行粘贴和 `↑` / `↓` 输入历史。使用 `Ctrl+C` 或 `Ctrl+D` 退出。
+
+### 本 fork 的 Codex / OpenCode 集成
+
+Codex 三段式工作流：[`docs/codex-wtagent-workflow.md`](./docs/codex-wtagent-workflow.md)。
+
+Codex 持久规则：[`AGENTS.md`](./AGENTS.md)。
+
+PowerShell 调用包装器：[`scripts/codex-wtagent.ps1`](./scripts/codex-wtagent.ps1)。
+
+OpenCode 集成：[`docs/opencode-integration.md`](./docs/opencode-integration.md)。
 
 ## License
 
