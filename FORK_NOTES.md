@@ -40,7 +40,7 @@ The document includes:
 
 ### Codex: Architect -> Executor -> Verifier
 
-The fork now contains a persistent Codex orchestration path:
+The fork contains a persistent Codex orchestration path:
 
 ```text
 WTAgent High/Pro Architect
@@ -71,7 +71,36 @@ Added files:
   - documents plan/review command examples, model policy, review-loop policy, failure handling, and future hardening.
 
 - `README.md`
-  - now exposes both Codex and OpenCode integration entry points from the repository front page.
+  - exposes both Codex and OpenCode integration entry points from the repository front page.
+
+### `docs/original-vs-codex-workflow.md`
+
+Added a frozen comparison of the three execution models:
+
+```text
+Upstream WTAgent
+  one strong agent owns planning + execution + verification
+
+Upstream OpenCode demo
+  main agent + optional independent WTAgent reviewer
+
+This fork's Codex workflow
+  WTAgent Architect -> Codex Executor -> WTAgent Verifier
+```
+
+The comparison records:
+
+- role ownership and controller differences;
+- who is expected to modify the repository;
+- which parts are inherited from the upstream OpenCode demo;
+- the fork's explicit Architect phase and acceptance criteria;
+- the PASS/BLOCKERS verification contract and remediation loop;
+- selective escalation for non-trivial tasks;
+- the Git worktree mutation detector;
+- the current limitation that reviewer read-only behavior is still not enforced by the WTAgent Runtime;
+- the preferred future direction: a native `--read-only` / reviewer policy with a restricted ToolRegistry.
+
+This document is intended as the baseline for later hard-read-only research.
 
 ### Security clarification
 
