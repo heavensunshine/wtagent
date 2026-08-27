@@ -1,6 +1,6 @@
 # Fork notes
 
-This fork keeps the upstream WTAgent implementation intact while adding a clearer OpenCode integration layer and documentation.
+This fork keeps the upstream WTAgent implementation intact while adding clearer OpenCode and Codex integration layers and documentation.
 
 ## Fork additions
 
@@ -20,7 +20,7 @@ OpenCode custom tool
     -> OpenCode
 ```
 
-The document now includes:
+The document includes:
 
 - custom-tool discovery and argument flow;
 - Git repository context collection;
@@ -38,13 +38,50 @@ The document now includes:
 - a failure map and troubleshooting split between WTAgent and OpenCode layers;
 - a source-file reading order for tracing the implementation.
 
+### Codex: Architect -> Executor -> Verifier
+
+The fork now contains a persistent Codex orchestration path:
+
+```text
+WTAgent High/Pro Architect
+        -> Codex Executor
+        -> WTAgent High/Pro Verifier
+```
+
+Added files:
+
+- `AGENTS.md`
+  - tells Codex when a task is complex enough to use the full workflow;
+  - requires an independent WTAgent planning pass before non-trivial implementation;
+  - keeps Codex as the intended repository writer;
+  - requires an independent WTAgent verification pass after implementation/tests;
+  - caps the normal blocker/fix/review loop instead of encouraging unlimited expensive reviews.
+
+- `scripts/codex-wtagent.ps1`
+  - exposes `-Phase plan` and `-Phase review`;
+  - invokes `wtagent --once --json` directly from Codex;
+  - supports `Instant`, `Medium`, `High`, `Pro`, and `Current`;
+  - defaults to `Pro`;
+  - returns structured JSON for Codex to consume;
+  - fingerprints Git status/diff before and after Architect/Verifier calls and fails if WTAgent unexpectedly changes the worktree.
+
+- `docs/codex-wtagent-workflow.md`
+  - documents the full three-role workflow;
+  - explains why Codex does not need the OpenCode TypeScript adapter;
+  - documents plan/review command examples, model policy, review-loop policy, failure handling, and future hardening.
+
+- `README.md`
+  - now exposes both Codex and OpenCode integration entry points from the repository front page.
+
 ### Security clarification
 
-A key correction is now documented explicitly:
+A key correction is documented explicitly:
 
-> The OpenCode adapter asks WTAgent to behave as a read-only reviewer, but that is a prompt-level restriction, not a hard read-only Runtime policy.
+> The OpenCode/Codex reviewer prompts ask WTAgent to behave as read-only, but that is a prompt-level restriction, not a hard read-only Runtime policy.
 
-The default WTAgent registry still contains write/exec-capable tools. The current `PolicyEngine` does not require confirmation merely because an in-project operation is a normal `fs.write` or `fs.edit`. Therefore hard read-only review requires an external filesystem/container boundary or a stricter reviewer-specific registry/policy.
+The default WTAgent registry still contains write/exec-capable tools. The current `PolicyEngine` does not require confirmation merely because an in-project operation is a normal `fs.write` or `fs.edit`.
+
+The Codex PowerShell wrapper adds **mutation detection** by fingerprinting the Git worktree before/after the WTAgent call. This detects a violation but does not prevent one. A future native `--read-only` / reviewer policy remains the preferred hardening direction.
 
 ### `examples/opencode/wtagent.ts`
 
@@ -70,8 +107,10 @@ is intentionally left untouched.
 Fork-specific additions stay primarily under:
 
 ```text
+AGENTS.md
 docs/
 examples/
+scripts/codex-wtagent.ps1
 FORK_NOTES.md
 ```
 
